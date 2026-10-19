@@ -1,0 +1,172 @@
+from pathlib import Path
+
+html = r'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neon Drift Sprint</title>
+<style>
+:root{color-scheme:dark;--cyan:#54f5ff;--pink:#ff4f9a;--gold:#ffd45c}
+*{box-sizing:border-box}
+body{margin:0;background:#080d18;color:#f4f8ff;font-family:system-ui,Segoe UI,Arial,sans-serif;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:18px}
+.game{width:min(100%,620px)}
+h1{text-align:center;margin:0;font-size:clamp(28px,6vw,44px);letter-spacing:3px;text-shadow:0 0 20px #18d7e7}
+.sub{text-align:center;color:#a9bacf;margin:3px 0 16px}
+.hud{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.stat{background:#111b2b;border:1px solid #26384c;border-radius:10px;text-align:center;padding:8px}
+.label{font-size:11px;color:#9fb3ca;letter-spacing:1px}.value{font-size:22px;font-weight:850}
+.stage{position:relative;border:1px solid #28465a;border-radius:14px;overflow:hidden;box-shadow:0 0 28px #00d9ff1c}
+canvas{display:block;width:100%;height:auto;touch-action:none;background:#101d1a}
+.overlay{position:absolute;inset:0;background:#050b16eF;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px}
+.overlay[hidden]{display:none}.panel{max-width:390px}.panel h2{font-size:clamp(28px,7vw,42px);margin:0 0 8px}.panel p{line-height:1.6;color:#d3e1f2}
+button{background:#14263a;border:1px solid #35516b;color:#fff;padding:12px 15px;border-radius:9px;font-weight:800;cursor:pointer;min-height:44px}
+button:hover{filter:brightness(1.2)}button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}.primary{background:#087d91;border-color:var(--cyan)}
+.controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}.actions{display:flex;justify-content:center;gap:8px;margin-top:9px;flex-wrap:wrap}
+.help{text-align:center;color:#9fb3ca;font-size:12px;line-height:1.6;margin-top:12px}
+@media(max-width:420px){body{padding:9px}.value{font-size:18px}.stat{padding:7px 3px}.controls button{padding:10px 4px;font-size:12px}}
+</style>
+</head>
+<body>
+<main class="game">
+<h1>NEON DRIFT SPRINT</h1>
+<p class="sub">DODGE • DRIFT • COLLECT • SURVIVE</p>
+<div class="hud">
+ <div class="stat"><div class="label">SCORE</div><div class="value" id="score">0</div></div>
+ <div class="stat"><div class="label">COINS</div><div class="value" id="coins">0 🪙</div></div>
+ <div class="stat"><div class="label">SPEED</div><div class="value" id="speed">0</div></div>
+</div>
+<div class="stage">
+<canvas id="game" width="480" height="620" aria-label="Racing game: avoid traffic and collect coins"></canvas>
+<div class="overlay" id="overlay"><div class="panel"><h2 id="overlayTitle">NEON DRIFT</h2><p id="overlayText">SPRINT CHAMPIONSHIP<br>🏁 Dodge rival cars, collect gold coins and use nitro.<br><br>Survive as long as you can while the road gets faster!</p><button class="primary" id="start">START RACING ▶</button></div></div>
+</div>
+<div class="controls">
+ <button id="left">◀ LEFT</button><button id="nitro">⚡ HOLD NITRO</button><button id="right">RIGHT ▶</button>
+</div>
+<div class="actions"><button id="pause">Ⅱ PAUSE</button><button id="restart">↻ RESTART</button></div>
+<p class="help">Keyboard: ← / A and → / D to steer · ↑ / W to use nitro · Space to pause · R to restart.<br>On phones, hold the on-screen buttons.</p>
+</main>
+<script>
+(() => {
+"use strict";
+const $ = id => document.getElementById(id);
+const canvas = $("game"), ctx = canvas.getContext("2d");
+const W=480,H=620,LEFT=62,RIGHT=418;
+let state="ready",playerX=240,playerY=510,items=[],particles=[],coins=0,score=0,speed=170,time=0,roadOffset=0,spawnTimer=.5,nitroTime=0,keys={},lastTime=0,raf=0;
+
+function updateHUD(){
+ $("score").textContent=Math.floor(score).toLocaleString();
+ $("coins").textContent=coins+" 🪙";
+ $("speed").textContent=Math.round(speed)+" km/h";
+}
+function showOverlay(title,html,buttonText){
+ $("overlayTitle").textContent=title;$("overlayText").innerHTML=html;
+ $("start").textContent=buttonText;$("overlay").hidden=false;
+}
+function resetGame(){
+ playerX=240;items=[];particles=[];coins=0;score=0;speed=170;time=0;roadOffset=0;spawnTimer=.45;nitroTime=0;keys={};updateHUD();
+}
+function startGame(){
+ resetGame();state="playing";$("overlay").hidden=true;
+ $("start").textContent="START RACING ▶";$("pause").textContent="Ⅱ PAUSE";
+ $("overlayText").innerHTML="";lastTime=performance.now();cancelAnimationFrame(raf);raf=requestAnimationFrame(loop);
+}
+function endGame(){
+ if(state!=="playing")return;state="over";cancelAnimationFrame(raf);
+ showOverlay("RACE OVER","Final score: <b>"+Math.floor(score).toLocaleString()+"</b><br>Coins collected: <b>"+coins+"</b><br>Distance: <b>"+Math.floor(time*speed/3.6)+" m</b><br><br>Ready for another run?","RACE AGAIN ↻");
+}
+function addCar(){
+ const lane=Math.floor(Math.random()*3);
+ items.push({type:"car",x:LEFT+(RIGHT-LEFT)*(lane+.5)/3,y:-60,w:34,h:56,v:speed*(.62+Math.random()*.25),color:["#ff4f9a","#a78bfa","#ffad5a","#63d9ff"][Math.floor(Math.random()*4)]});
+}
+function addCoin(){
+ items.push({type:"coin",x:LEFT+22+Math.random()*(RIGHT-LEFT-44),y:-24,w:22,h:22,v:0});
+}
+function burst(x,y){
+ for(let i=0;i<36;i++){const a=Math.random()*Math.PI*2,v=55+Math.random()*230;particles.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,life:.5+Math.random()*.8,max:1.3,color:["#ff553d","#ffd45c","#54f5ff","#ff4f9a"][i%4]});}
+}
+function hit(a,b){return Math.abs(a.x-b.x)<(a.w+b.w)/2-3&&Math.abs(a.y-b.y)<(a.h+b.h)/2-4;}
+function roundedRect(x,y,w,h,r,color){
+ ctx.fillStyle=color;ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill();
+}
+function drawCar(x,y,color,isPlayer=false){
+ ctx.save();ctx.translate(x,y);
+ if(isPlayer){ctx.shadowColor="#54f5ff";ctx.shadowBlur=19;}
+ roundedRect(-17,-28,34,56,9,color);ctx.shadowBlur=0;
+ roundedRect(-12,-18,24,17,4,"#19344a");roundedRect(-12,5,24,12,3,"#82efff");
+ roundedRect(-20,-18,5,10,2,"#fff2a8");roundedRect(15,-18,5,10,2,"#fff2a8");
+ roundedRect(-20,14,5,10,2,"#ff3f69");roundedRect(15,14,5,10,2,"#ff3f69");
+ ctx.restore();
+}
+function draw(){
+ ctx.clearRect(0,0,W,H);ctx.fillStyle="#10261f";ctx.fillRect(0,0,W,H);
+ ctx.fillStyle="#242f40";ctx.fillRect(LEFT,0,RIGHT-LEFT,H);
+ ctx.fillStyle="#54f5ff";ctx.fillRect(LEFT,0,3,H);ctx.fillRect(RIGHT-3,0,3,H);
+ ctx.strokeStyle="#c1d0e0";ctx.lineWidth=3;ctx.setLineDash([24,25]);ctx.lineDashOffset=-roadOffset;
+ for(let lane=1;lane<=2;lane++){const lx=LEFT+(RIGHT-LEFT)*lane/3;ctx.beginPath();ctx.moveTo(lx,0);ctx.lineTo(lx,H);ctx.stroke();}
+ ctx.setLineDash([]);
+ for(let i=0;i<10;i++){ctx.fillStyle="#345442";const yy=(i*75+roadOffset*1.8)%H;ctx.fillRect(18,yy,25,4);ctx.fillRect(438,yy,25,4);}
+ for(const o of items){
+  if(o.type==="car")drawCar(o.x,o.y,o.color);
+  else {ctx.save();ctx.translate(o.x,o.y);ctx.rotate(time*2.2);ctx.shadowColor="#ffd45c";ctx.shadowBlur=15;ctx.fillStyle="#ffd45c";ctx.beginPath();ctx.moveTo(0,-13);ctx.lineTo(11,0);ctx.lineTo(0,13);ctx.lineTo(-11,0);ctx.closePath();ctx.fill();ctx.shadowBlur=0;ctx.fillStyle="#fff4c7";ctx.font="bold 12px system-ui";ctx.textAlign="center";ctx.fillText("★",0,4);ctx.restore();}
+ }
+ for(const p of particles){ctx.globalAlpha=Math.max(0,p.life/p.max);ctx.fillStyle=p.color;ctx.beginPath();ctx.arc(p.x,p.y,3+4*p.life/p.max,0,Math.PI*2);ctx.fill();}
+ ctx.globalAlpha=1;drawCar(playerX,playerY,"#12cddd",true);
+ if(nitroTime>0){ctx.fillStyle="#73efff";ctx.beginPath();ctx.moveTo(playerX-8,playerY+26);ctx.lineTo(playerX,playerY+42+Math.random()*7);ctx.lineTo(playerX+8,playerY+26);ctx.fill();}
+ ctx.fillStyle="#f3fbff";ctx.font="bold 13px system-ui";ctx.fillText("NEON DRIFT SPRINT",LEFT+12,23);
+}
+function loop(now){
+ if(state!=="playing")return;
+ const dt=Math.min(.035,Math.max(0,(now-lastTime)/1000));lastTime=now;time+=dt;
+ speed=Math.min(500,speed+dt*2.2);
+ if(keys.nitro&&nitroTime<=0)nitroTime=1.7;
+ if(nitroTime>0){nitroTime=Math.max(0,nitroTime-dt);speed=Math.min(500,speed+dt*38);}
+ const direction=(keys.right?1:0)-(keys.left?1:0);
+ playerX+=direction*(nitroTime>0?335:270)*dt;
+ playerX=Math.max(LEFT+18,Math.min(RIGHT-18,playerX));
+ roadOffset=(roadOffset+speed*dt*.55)%49;
+ score+=dt*(speed/9)+(nitroTime>0?dt*10:0);
+ spawnTimer-=dt;
+ if(spawnTimer<=0){if(Math.random()<.72)addCar();else addCoin();spawnTimer=Math.max(.28,.9-time*.007)+Math.random()*.35;}
+ if(Math.random()<dt*.45)addCoin();
+ for(let i=items.length-1;i>=0;i--){
+  const o=items[i];o.y+=((o.type==="coin"?speed*.6:o.v)+speed*.35)*dt;
+  if(hit({x:playerX,y:playerY,w:32,h:52},o)){
+   if(o.type==="car"){burst(playerX,playerY);draw();endGame();return;}
+   coins++;score+=250;burst(o.x,o.y);items.splice(i,1);continue;
+  }
+  if(o.y>H+60)items.splice(i,1);
+ }
+ for(const p of particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;}
+ particles=particles.filter(p=>p.life>0);
+ if(playerX<=LEFT+17||playerX>=RIGHT-17){burst(playerX,playerY);draw();endGame();return;}
+ updateHUD();draw();raf=requestAnimationFrame(loop);
+}
+function setKey(e,on){
+ const k=e.key.toLowerCase();
+ if(["arrowleft","arrowright","arrowup"," ","arrowdown"].includes(k))e.preventDefault();
+ if(k==="arrowleft"||k==="a")keys.left=on;
+ if(k==="arrowright"||k==="d")keys.right=on;
+ if(k==="arrowup"||k==="w")keys.nitro=on;
+ if(k===" "&&on&&!e.repeat)togglePause();
+ if(k==="r"&&on)startGame();
+}
+document.addEventListener("keydown",e=>{if(!e.target.closest("button,input"))setKey(e,true);});
+document.addEventListener("keyup",e=>setKey(e,false));
+function hold(id,key){const b=$(id);b.addEventListener("pointerdown",e=>{e.preventDefault();keys[key]=true;b.setPointerCapture(e.pointerId);});for(const ev of ["pointerup","pointercancel","lostpointercapture"])b.addEventListener(ev,()=>keys[key]=false);}
+hold("left","left");hold("right","right");hold("nitro","nitro");
+function togglePause(){
+ if(state==="playing"){state="paused";cancelAnimationFrame(raf);$("pause").textContent="▶ RESUME";showOverlay("PAUSED","Take a breath. Your race is waiting.","RESUME ▶");}
+ else if(state==="paused"){state="playing";$("overlay").hidden=true;$("pause").textContent="Ⅱ PAUSE";lastTime=performance.now();raf=requestAnimationFrame(loop);}
+}
+$("start").addEventListener("click",()=>{if(state==="paused")togglePause();else startGame();});
+$("restart").addEventListener("click",startGame);$("pause").addEventListener("click",togglePause);
+draw();updateHUD();
+})();
+</script>
+</body>
+</html>
+'''
+path = Path("/mnt/data/neon_drift_sprint.html")
+path.write_text(html, encoding="utf-8")
+print(f"Created {path} ({path.stat().st_size:,} bytes)")
